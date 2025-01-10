@@ -16,7 +16,7 @@ model = AudioDecoder(input_dim=2206).to(torch.bfloat16).to("cuda")
 optimizer = AdamWBF16(model.parameters(), lr=1e-3, cautious=True)
 # Set up one cycle learning rate schedule
 total_steps = 10000  # Adjust based on your expected number of steps
-chunk_size = model.input_dim * 10 * 8  # 8 seconds
+chunk_size = model.input_dim * 10 # 1 second
 
 
 def pad_to_multiple_of(a, divisor, axis=-1):
@@ -29,18 +29,20 @@ def batches():
     if not os.path.exists("gtzan"):
         import subprocess as sp
 
-        sp.run("fetch.sh")
+        sp.run(["curl", "-K", "fetch.curl.conf"])
 
     df = pl.scan_parquet("gtzan/*.parquet").select(
         decode_wav(pl.col("audio").struct.field("bytes")).alias("audio"), "genre"
     )
     loaded = ak.from_arrow(df.collect().to_arrow())
     padded = [
-        pad_to_multiple_of(ak.to_numpy(a), chunk_size).reshape(-1, chunk_size)
+        pad_to_multiple_of(ak.to_numpy(a), model.input_dim).reshape(-1, model.input_dim)
         for a in loaded["audio"]
     ]
-    tk_ids = np.repeat(np.arange(len(padded)), [a.shape[-2] for a in padded])
-    genres = np.repeat(ak.to_numpy(loaded["genre"]), [a.shape[-2] for a in padded])
+    lengths = [a.shape[-2] for a in padded]
+    assert sum(lengths) > chunk_size, "Dataset is too small"
+    tk_ids = np.repeat(np.arange(len(padded)), lengths)
+    genres = np.repeat(ak.to_numpy(loaded["genre"]), lengths)
     padded = np.concatenate(padded, axis=-2)
     cursor = 0
     while True:
